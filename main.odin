@@ -134,97 +134,138 @@ main :: proc() {
 		delete_2D(pressure_pong)
 	}
 
-	// Calculate divergence
+	calc_divergence(initial_velocity, initial_divergence)
+	write_scalar(initial_divergence, "initial_divergence.png", 384/N, linear_scalar_color_map)
+
+	// Solve pressure
+	for iter := 0; iter < iterations; iter += 1 {
+		fmt.println(iter)
+		iterate_jacobi(pressure_ping, initial_divergence, pressure_pong)
+		pressure_ping, pressure_pong = pressure_pong, pressure_ping
+
+		if !((iter % dump_interval) == 0  || iter == iterations-1) do continue
+		write_scalar(pressure_ping, "pressure.png", 384/N, logarithmic_scalar_color_map)
+
+		residual := make_2D(f32, N, N)
+		defer delete_2D(residual)	
+		calc_residual(pressure_ping, initial_divergence, residual)	
+		write_scalar(residual, "residual.png", 384/N, logarithmic_scalar_color_map)
+
+		velocity := make_2D([2]f32, N, N)
+		defer delete_2D(velocity)
+		subtract_gradient(pressure_ping, initial_velocity, velocity)
+		write_velocity(velocity, "velocity.png", 384/N)
+
+		divergence := make_2D(f32, N, N)
+		defer delete_2D(divergence)
+		calc_divergence(velocity, divergence)
+		write_scalar(divergence, "divergence.png", 384/N, logarithmic_scalar_color_map)
+	}
+}
+
+calc_residual :: proc(pressure, divergence, residual: [][]f32) {
+	N := len(pressure)
+	assert(len(pressure[0]) == N)
+	assert(len(divergence) == N)
+	assert(len(divergence[0]) == N)
+	assert(len(residual) == N)
+	assert(len(residual[0]) == N)
+
+	// We explicitly skip the lower border, which is initialized to 0 already
+	// We implicitly skip the upper border, which is implicitly defined to be 0
+	for j in 1..<N {
+		for i in 1..<N {
+			center      := pressure[j+0][i+0]
+			lower_left  := pressure[j-1][i-1]
+			lower_right := pressure[j-1][i+1] if i+1 < N else 0.0
+			upper_left  := pressure[j+1][i-1] if j+1 < N else 0.0
+			upper_right := pressure[j+1][i+1] if i+1 < N && j+1 < N else 0.0
+
+			// 2.0 = sqrt(2) * sqrt(2) is the diagonal grid spacing
+			residual[j][i] = -2.0*divergence[j][i] + lower_left + lower_right + upper_left + upper_right - 4*center
+		}
+	}
+}
+
+iterate_jacobi :: proc(in_pressure, divergence, out_pressure: [][]f32, omega: f32 = 1.0) {
+	N := len(in_pressure)
+	assert(len(in_pressure[0]) == N)
+	assert(len(divergence) == N)
+	assert(len(divergence[0]) == N)
+	assert(len(out_pressure) == N)
+	assert(len(out_pressure[0]) == N)
+
+	// We explicitly skip the lower border, which is initialized to 0 already
+	// We implicitly skip the upper border, which is implicitly defined to be 0
+	for j in 1..<N {
+		for i in 1..<N {
+			lower_left  := in_pressure[j-1][i-1]
+			lower_right := in_pressure[j-1][i+1] if i+1 < N else 0.0
+			upper_left  := in_pressure[j+1][i-1] if j+1 < N else 0.0
+			upper_right := in_pressure[j+1][i+1] if i+1 < N && j+1 < N else 0.0
+
+			// 2.0 = sqrt(2) * sqrt(2) is the diagonal grid spacing
+			p_Jacobi := (-2.0*divergence[j][i] + lower_left + lower_right + upper_left + upper_right) / 4.0				
+
+			// Weighted Jacobi if in_pressure != out_pressure and omega <= 1
+			// SOR if in_pressure == out_pressure and 1 <= omega <= 2
+			out_pressure[j][i] = in_pressure[j][i] * (1.0 - omega) + p_Jacobi * omega
+		}
+	}
+}
+
+subtract_gradient :: proc(pressure: [][]f32, in_velocity, out_velocity: [][][2]f32) {
+	N := len(pressure)
+	assert(len(pressure[0]) == N)
+	assert(len(in_velocity) == N)
+	assert(len(in_velocity[0]) == N)
+	assert(len(out_velocity) == N)
+	assert(len(out_velocity[0]) == N)
+
+	for j in 0..<N {
+		for i in 0..<N {
+			lower_left  := pressure[j+0][i+0]
+			lower_right := pressure[j+0][i+1] if i+1 < N else 0.0
+			upper_left  := pressure[j+1][i+0] if j+1 < N else 0.0
+			upper_right := pressure[j+1][i+1] if i+1 < N && j+1 < N else 0.0
+
+			left  := (lower_left  + upper_left)  / 2.0
+			right := (lower_right + upper_right) / 2.0
+			up    := (upper_left  + upper_right) / 2.0
+			down  := (lower_left  + lower_right) / 2.0
+
+			out_velocity[j][i] = in_velocity[j][i] - {
+				right - left,
+				up - down,
+			}
+		}
+	}
+}
+
+calc_divergence :: proc(velocity: [][][2]f32, divergence: [][]f32) {
+	N := len(velocity)
+	assert(len(velocity[0]) == N)
+	assert(len(divergence) == N)
+	assert(len(divergence[0]) == N)
+
 	// We explicitly skip the lower border, which is initialized to 0 already
 	// We implicitly skip the upper border, which is implicitly defined to be 0
 	for j in 1..<N {
 		for i in 1..<N {
 			// Fetch the nearest 4 velocities
-			lower_left  := initial_velocity[j-1][i-1]
-			lower_right := initial_velocity[j-1][i+0]
-			upper_left  := initial_velocity[j+0][i-1]
-			upper_right := initial_velocity[j+0][i+0]
+			lower_left  := velocity[j-1][i-1]
+			lower_right := velocity[j-1][i+0]
+			upper_left  := velocity[j+0][i-1]
+			upper_right := velocity[j+0][i+0]
 
 			// Calculate the face values
-			left  := (lower_left.x  + upper_left.x) / 2.0
+			left  := (lower_left.x  + upper_left.x)  / 2.0
 			right := (lower_right.x + upper_right.x) / 2.0
 			up    := (upper_left.y  + upper_right.y) / 2.0
 			down  := (lower_left.y  + lower_right.y) / 2.0
 
 			// Central difference using face values, grid spacing 1/2
-			initial_divergence[j][i] = (right - left) + (up - down)
+			divergence[j][i] = (right - left) + (up - down)
 		}
-	}
-	write_scalar(initial_divergence, "initial_divergence.png", 384/N, linear_scalar_color_map)
-
-	// Solve pressure
-	// We explicitly skip the lower border, which is initialized to 0 already
-	// We implicitly skip the upper border, which is implicitly defined to be 0
-	for iter := 0; iter < iterations; iter += 1 {
-		fmt.println(iter)
-		for j in 1..<N {
-			for i in 1..<N {
-				lower_left  := pressure_ping[j-1][i-1]
-				lower_right := pressure_ping[j-1][i+1] if i+1 < N else 0.0
-				upper_left  := pressure_ping[j+1][i-1] if j+1 < N else 0.0
-				upper_right := pressure_ping[j+1][i+1] if i+1 < N && j+1 < N else 0.0
-
-				pressure_pong[j][i] = (-2.0*initial_divergence[j][i] + lower_left + lower_right + upper_left + upper_right) / 4.0
-			}
-		}
-
-		pressure_ping, pressure_pong = pressure_pong, pressure_ping
-
-		if !((iter % dump_interval) == 0  || iter == iterations-1) {
-			continue
-		}
-		write_scalar(pressure_ping, "pressure.png", 384/N, logarithmic_scalar_color_map)
-
-		// Apply gradient
-		velocity := make_2D([2]f32, N, N)
-		defer delete_2D(velocity)
-		for j in 0..<N {
-			for i in 0..<N {
-				lower_left  := pressure_ping[j+0][i+0]
-				lower_right := pressure_ping[j+0][i+1] if i+1 < N else 0.0
-				upper_left  := pressure_ping[j+1][i+0] if j+1 < N else 0.0
-				upper_right := pressure_ping[j+1][i+1] if i+1 < N && j+1 < N else 0.0
-
-				left  := (lower_left  + upper_left) / 2.0
-				right := (lower_right + upper_right) / 2.0
-				up    := (upper_left  + upper_right) / 2.0
-				down  := (lower_left  + lower_right) / 2.0
-
-				velocity[j][i] = initial_velocity[j][i] - {
-					right - left,
-					up - down,
-				}
-			}
-
-			pressure_ping, pressure_pong = pressure_pong, pressure_ping
-		}
-		write_velocity(velocity, "velocity.png", 384/N)
-
-		divergence := make_2D(f32, N, N)
-		defer delete_2D(divergence)
-		for j in 1..<N {
-			for i in 1..<N {
-				// Fetch the nearest 4 velocities
-				lower_left  := velocity[j-1][i-1]
-				lower_right := velocity[j-1][i+0]
-				upper_left  := velocity[j+0][i-1]
-				upper_right  := velocity[j+0][i+0]
-
-				// Calculate the face values
-				left  := (lower_left.x  + upper_left.x) / 2.0
-				right := (lower_right.x + upper_right.x) / 2.0
-				up    := (upper_left.y  + upper_right.y) / 2.0
-				down  := (lower_left.y  + lower_right.y) / 2.0
-
-				// Central difference using face values, grid spacing 1/2
-				divergence[j][i] = (right - left) + (up - down)
-			}
-		}
-		write_scalar(divergence, "divergence.png", 384/N, logarithmic_scalar_color_map)
 	}
 }
