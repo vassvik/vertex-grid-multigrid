@@ -213,6 +213,7 @@ main :: proc() {
 		defer delete_2D(divergence)
 		calc_divergence(velocity, divergence)
 		write_scalar(divergence, "divergence.png", 384/N, logarithmic_scalar_color_map)
+		write_scalar(divergence, "divergence_linear.png", 384/N, linear_scalar_color_map)
 
 		max_residual, rms_residual, gradient_residual := calc_stats(residual)
 
